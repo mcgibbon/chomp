@@ -4,6 +4,8 @@ from sympl import Prognostic, get_numpy_array, combine_dimensions
 c1 = None  # constant in Golaz et al. 2002 eqn 24a
 c2 = None  # constant in Golaz et al. 2002 eqn 24a-b
 c8 = None  # constant in Golaz et al. 2002 eqn 23
+nu_1 = None # constant in Golaz et al. 2002 eqn 24a
+nu_2 = None # constant in Golaz et al. 2002 eqn 24a-b
 nu_6 = None  # constant in Golaz et al. 2002 eqn 24c
 
 
@@ -14,7 +16,7 @@ class CHOMP(Prognostic):
 def get_tendencies(
     u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal):
     tendencies = {}
-    (w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_dpdz, qn_dpdz,
+    (w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal, w2_dpdz, qn_dpdz,
      thetal_dpdz) = moment_closure(
         w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal)
     sqrt_turbulence_kinetic_energy = (3./2*w2)**0.5
@@ -45,7 +47,7 @@ def get_tendencies(
     tendencies['thetal2'] = - d_dz(w_thetal2) - 2*w_thetal*dthetal_dz - epsilon_thetal_thetal
     tendencies['qn_thetal'] = - d_dz(w_qn_thetal) - w_qn*dthetal_dz - w_thetal*dqn_dz - epsilon_qn_thetal
     tendencies['w_qn'] = - d_dz(w2_qn) - w2*dqn_dz - w_qn*dw_dz + g/theta_0*qn_thetav - qn_dpdz/rho_0 - epsilon_w_qn
-    tendencies['w_thetal'] = - d_dz(w2_thetal) - w2_dthetal_dz - w_thetal*dthetal_dz + g/theta_0*thetal_thetav - thetal_dpdz/rho_0 - epsilon_w_thetal
+    tendencies['w_thetal'] = - d_dz(w2_thetal) - w2*dthetal_dz - w_thetal*dthetal_dz + g/theta_0*thetal_thetav - thetal_dpdz/rho_0 - epsilon_w_thetal
     tendencies['w3'] = - d_dz(w4) + e*w2*d_dz(w2) - 2*w3*dw_dz + 3*g/theta_0*w2_thetav - 3/rho_0*w2_dpdz - epsilon_w_w_w
 
 
