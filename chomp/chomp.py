@@ -10,9 +10,11 @@ c6 = None  # constant in Golaz et al. 2002 eqn 19-21
 c7 = None  # constant in Golaz et al. 2002 eqn 19-21
 c8 = None  # constant in Golaz et al. 2002 eqn 23
 c_K = 0.548  # constant in Golaz et al. 2002 eqn. 35, as in Duynkerke and Driedonks (1987)
-nu_1 = None # constant in Golaz et al. 2002 eqn 24a
-nu_2 = None # constant in Golaz et al. 2002 eqn 24a-b
+nu_1 = None  # constant in Golaz et al. 2002 eqn 24a
+nu_2 = None  # constant in Golaz et al. 2002 eqn 24a-b
 nu_6 = None  # constant in Golaz et al. 2002 eqn 24c
+
+epsilon_0 = Rd / Rv
 
 adg1 = Closure('adg1')
 
@@ -22,7 +24,6 @@ class CHOMP(Prognostic):
 
 def get_tendencies(
     u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, thetav, rho, g):
-    epsilon_0 = Rd/Rv
     tendencies = {}
     sqrt_turbulence_kinetic_energy = (3./2*w2)**0.5
     L1, L2 = get_eddy_length_scales()
@@ -48,21 +49,23 @@ def get_tendencies(
         w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, rho, tau_1, tau_2, dw_dz, u_w, v_w, d_dz(u), d_dz(v))
 
     # dissipation rates as defined in Golaz et al. 2002 eqn 24a-c
-    epsilon_w_w = c_1 / tau_1 * w2 - nu_1 * d2_dz2(w2)
-    epsilon_qn_qn = c_2 / tau_1 * qn2 - nu_2 * d2_dz2(qn2)
-    epsilon_thetal_thetal = c_2 / tau_1 * thetal2 - nu_2 * d2_dz2(thetal2)
-    epsilon_qn_thetal = c_2 / tau_1 * qn_thetal - nu_2 * d2_dz2(qn_thetal)
+    epsilon_w_w = c1 / tau_1 * w2 - nu_1 * d2_dz2(w2)
+    epsilon_qn_qn = c2 / tau_1 * qn2 - nu_2 * d2_dz2(qn2)
+    epsilon_thetal_thetal = c2 / tau_1 * thetal2 - nu_2 * d2_dz2(thetal2)
+    epsilon_qn_thetal = c2 / tau_1 * qn_thetal - nu_2 * d2_dz2(qn_thetal)
     epsilon_w_qn = -1 * nu_6 * d2_dz2(w_qn)
     epsilon_w_thetal = -1 * nu_6 * d2_dz2(w_thetal)
 
     # unlike in CLUBB, there is no constant "a" (see Golaz et al. 2002 eqn 26)
     tau_w_w_w = tau_1
-    epsilon_w_w_w = c_8 / tau_w_w_w * w3
+    epsilon_w_w_w = c8 / tau_w_w_w * w3
 
 
     # Golaz et al. 2002 eqn 33
-    constant_1 = (1 - epsilon_0)/epsilon_0*thetav
-    constant_2 = Lv/Cpd*(p0/p)**Rd/Cpd - thetav/epsilon_0
+    # we modify thetav -> theta due to Bougealt et al. 1981b eqns 4-5
+    theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
+    constant_1 = (1 - epsilon_0)/epsilon_0*theta
+    constant_2 = Lv/Cpd*(p0/p)**(Rd/Cpd) - theta/epsilon_0
     w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
     qn_thetav = qn_thetal + constant_1*qn2 + constant_2*qn_ql
     thetal_thetav = thetal2 + constant_1*qn_thetal + constant_2*thetal_ql
@@ -112,6 +115,15 @@ def adg1_moment_closure(w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_
     w_qn_thetal = return_moments.get({'w': 1, 'qt': 1, 'thetal': 1}, central=True)
     w2_qn = return_moments.get({'w': 2, 'qt': 1}, central=True)
     w2_thetal = return_moments.get({'w': 2, 'thetal': 1}, central=True)
+    w_ql = return_moments.get({'w': 1, 'ql': 1}, central=True)
+    qn_ql = return_moments.get({'qt': 1, 'ql': 1}, central=True)
+    thetal_ql = return_moments.get({'thetal': 1, 'ql': 1}, central=True)
+    w2_ql = return_moments.get({'w': 2, 'ql': 1}, central=True)
+    ql = return_moments.get({'ql': 1}, central=False)
+    theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
+    constant_1 = (1 - epsilon_0)/epsilon_0*theta
+    constant_2 = Lv/Cpd*(p0/p)**Rd/Cpd - theta/epsilon_0
+    w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
     w_dpdz = - c5 * (-2*w2*dw_dz + 2*g/theta_v*w_thetav) + 2./3*c5*(g/theta_v*w_thetav - u_w)
     return (w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal, w2_dpdz, qn_dpdz, thetal_dpdz)
 
