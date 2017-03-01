@@ -1,29 +1,55 @@
 # -*- coding: utf-8 -*-
-from sympl import Prognostic, get_numpy_array, combine_dimensions
+from sympl import Prognostic, get_numpy_array, combine_dimensions, default_constants
 from hoc import Closure, Moment, MomentCollection
 import numpy as np
 
-c1 = None  # constant in Golaz et al. 2002 eqn 24a
-c2 = None  # constant in Golaz et al. 2002 eqn 24a-b
-c5 = None  # constant in Golaz et al. 2002 eqn 19-21
-c6 = None  # constant in Golaz et al. 2002 eqn 19-21
-c7 = None  # constant in Golaz et al. 2002 eqn 19-21
-c8 = None  # constant in Golaz et al. 2002 eqn 23
+c1 = 1.7  # constant in Golaz et al. 2002 eqn 24a
+c2 = 1.04  # constant in Golaz et al. 2002 eqn 24a-b
+c5 = 0.  # constant in Golaz et al. 2002 eqn 19-21
+c6 = 4.85  # constant in Golaz et al. 2002 eqn 19-21
+c7 = 0.8  # constant in Golaz et al. 2002 eqn 19-21
+c8 = 2.73  # constant in Golaz et al. 2002 eqn 23
+c11 = 0.2  # constant in Golaz et al. 2002 eqn 23
 c_K = 0.548  # constant in Golaz et al. 2002 eqn. 35, as in Duynkerke and Driedonks (1987)
-nu_1 = None  # constant in Golaz et al. 2002 eqn 24a
-nu_2 = None  # constant in Golaz et al. 2002 eqn 24a-b
-nu_6 = None  # constant in Golaz et al. 2002 eqn 24c
+nu_1 = 20.  # constant in Golaz et al. 2002 eqn 24a
+nu_2 = 20.  # constant in Golaz et al. 2002 eqn 24a-b
+nu_6 = 30.  # constant in Golaz et al. 2002 eqn 24c
 
-epsilon_0 = Rd / Rv
 
 adg1 = Closure('adg1')
 
-class CHOMP(Prognostic):
+class HOC(Prognostic):
+
+    def __init__(self):
+        self.Cpd = default_constants[
+            'heat_capacity_of_dry_air_at_constant_pressure'].to_units(
+                'J kg^-1 K^-1').values.item()
+        self.Rv = default_constants[
+            'gas_constant_of_water_vapor'].to_units('J kg^-1 K^-1').values.item()
+        self.Rd = default_constants[
+            'gas_constant_of_dry_air'].to_units('J kg^-1 K^-1').values.item()
+        self.Lv = default_constants[
+            'latent_heat_of_vaporization_of_water'].to_units('J kg^-1')
+        self.g = default_constants['gravitational_acceleration'].to_units('m s^-2')
+        self.p0 = default_constants['reference_pressure'].to_units('Pa')
+
+    def __call__(self, state):
+        p = state['air_pressure'].to_units('Pa')
+
+
+class CHOMP(HOC):
+    pass
+
+class CLUBB(HOC):
     pass
 
 
 def get_tendencies(
-    u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, thetav, rho, g):
+    p, u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, rho,
+    g, p0, Rd, Rv, Cpd, Lv, closure_type='chomp'):
+    epsilon_0 = Rd / Rv
+    if closure_type not in ['chomp', 'adg1']:
+        raise ValueError("closure_type must be one of ['chomp', 'adg1']")
     tendencies = {}
     sqrt_turbulence_kinetic_energy = (3./2*w2)**0.5
     L1, L2 = get_eddy_length_scales()
@@ -44,9 +70,18 @@ def get_tendencies(
     tendencies['v'] = np.zeros_like(v)
     tendencies['v'][:, 1:-1] = -d_dz(v_w)
 
-    (w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal, w2_dpdz, qn_dpdz,
-     thetal_dpdz) = adg1_moment_closure(
-        w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, rho, tau_1, tau_2, dw_dz, u_w, v_w, d_dz(u), d_dz(v))
+    # unlike in CLUBB, there is no constant "a" (see Golaz et al. 2002 eqn 26)
+    tau_w_w_w = tau_1
+    epsilon_w_w_w = c8 / tau_w_w_w * w3
+
+    if closure_type is 'adg1':
+        (tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
+         w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql,
+         thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav) = adg1_moment_closure(
+            p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal,
+            rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, d_dz(u), d_dz(v), g, p0, Rd, Cpd, Lv)
+    elif closure_type is 'chomp':
+        raise NotImplementedError
 
     # dissipation rates as defined in Golaz et al. 2002 eqn 24a-c
     epsilon_w_w = c1 / tau_1 * w2 - nu_1 * d2_dz2(w2)
@@ -56,14 +91,10 @@ def get_tendencies(
     epsilon_w_qn = -1 * nu_6 * d2_dz2(w_qn)
     epsilon_w_thetal = -1 * nu_6 * d2_dz2(w_thetal)
 
-    # unlike in CLUBB, there is no constant "a" (see Golaz et al. 2002 eqn 26)
-    tau_w_w_w = tau_1
-    epsilon_w_w_w = c8 / tau_w_w_w * w3
-
-
     # Golaz et al. 2002 eqn 33
-    # we modify thetav -> theta due to Bougealt et al. 1981b eqns 4-5
+    # we modify theta0 -> theta due to Bougealt et al. 1981b eqns 4-5
     theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
+    thetav = theta*(1 + 0.61*qn - ql)
     constant_1 = (1 - epsilon_0)/epsilon_0*theta
     constant_2 = Lv/Cpd*(p0/p)**(Rd/Cpd) - theta/epsilon_0
     w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
@@ -96,7 +127,9 @@ def get_eddy_length_scales():
     raise NotImplementedError
 
 
-def adg1_moment_closure(w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, rho, tau_1, tau_2, dw_dz, u_w, v_w, du_dz, dv_dz):
+def adg1_moment_closure(
+        p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal,
+        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv):
     moments = MomentCollection
     moments.set(Moment(w, {'w': 1}, central=False))
     moments.set(Moment(w2, {'w': 2}, central=True))
@@ -120,10 +153,44 @@ def adg1_moment_closure(w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_
     thetal_ql = return_moments.get({'thetal': 1, 'ql': 1}, central=True)
     w2_ql = return_moments.get({'w': 2, 'ql': 1}, central=True)
     ql = return_moments.get({'ql': 1}, central=False)
-    theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
-    constant_1 = (1 - epsilon_0)/epsilon_0*theta
-    constant_2 = Lv/Cpd*(p0/p)**Rd/Cpd - theta/epsilon_0
-    w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
-    w_dpdz = - c5 * (-2*w2*dw_dz + 2*g/theta_v*w_thetav) + 2./3*c5*(g/theta_v*w_thetav - u_w)
-    return (w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal, w2_dpdz, qn_dpdz, thetal_dpdz)
 
+    thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav = get_thetav_moments(
+        p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
+    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd)
+
+    w_dpdz = -rho/2. * (
+        - c5 * (-2*w2*dw_dz + 2*g/thetav*w_thetav) +
+        2./3*c5*(g/thetav*w_thetav - u_w))
+    qn_dpdz = -rho * (
+        -c6/tau_2*w_qn - c7*(-w_qn*dw_dz + g/thetav*qn_thetav)
+    )
+    thetal_dpdz = -rho * (
+        -c6/tau_2*w_thetal - c7 * (-w_thetal*dw_dz + g/thetav*thetal_thetav)
+    )
+    # yeah, this isn't a real moment, but this was the easiest way to get the
+    # value of a which we need for tau_w_w_w without re-calculating it
+    a = return_moments.get({'a': 1}, central=False)
+    tau_w_w_w[a < 0.05] = tau_w_w_w[a < 0.05]/(1 + 3*(1 - (a[a < 0.05]-0.01)/0.04))
+    tau_w_w_w[a > 0.05] = tau_w_w_w[a > 0.05]/(1 + 3*(1 - (0.99 - a[a > 0.05])/0.04))
+    w2_dpdz = -rho/3. * (
+        -c8/tau_w_w_w*w3 - c11*(-2*w3*dw_dz + 3*g/thetav*w2_thetav)
+    return (
+        tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
+        w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql, thetav,
+        w_thetav, qn_thetav, thetal_thetav, w2_thetav)
+
+
+def get_thetav_moments(
+        p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
+    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd):
+    # Golaz et al. 2002 eqn 33
+    # we modify theta0 -> theta due to Bougealt et al. 1981b eqns 4-5
+    theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
+    thetav = theta*(1 + 0.61*qn - ql)
+    constant_1 = (1 - epsilon_0)/epsilon_0*theta
+    constant_2 = Lv/Cpd*(p0/p)**(Rd/Cpd) - theta/epsilon_0
+    w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
+    qn_thetav = qn_thetal + constant_1*qn2 + constant_2*qn_ql
+    thetal_thetav = thetal2 + constant_1*qn_thetal + constant_2*thetal_ql
+    w2_thetav = w2_thetal + constant_1*w2_qn + constant_2*w2_ql
+    return thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav
