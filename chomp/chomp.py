@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-from sympl import Prognostic, get_numpy_array, combine_dimensions, default_constants
+from sympl import (
+    Prognostic, get_numpy_array, combine_dimensions, default_constants,
+    restore_dimensions)
 from hoc import Closure, Moment, MomentCollection
 import numpy as np
 
@@ -20,6 +22,8 @@ adg1 = Closure('adg1')
 
 class HOC(Prognostic):
 
+    closure_type = None
+
     def __init__(self):
         self.Cpd = default_constants[
             'heat_capacity_of_dry_air_at_constant_pressure'].to_units(
@@ -34,17 +38,176 @@ class HOC(Prognostic):
         self.p0 = default_constants['reference_pressure'].to_units('Pa')
 
     def __call__(self, state):
-        p = state['air_pressure'].to_units('Pa')
+        p = get_numpy_array(state['air_pressure'].to_units('Pa'), ['*', 'z'])
+        u = get_numpy_array(state['eastward_wind'].to_units('m/s'), ['*', 'z'])
+        v = get_numpy_array(state['northward_wind'].to_units('m/s'), ['*', 'z'])
+        w = get_numpy_array(state['vertical_wind'].to_units('m/s'), ['*', 'z'])
+        w2 = get_numpy_array(
+            state['vertical_wind_variance'].to_units('m^2 s^-2'), ['*', 'z'])
+        w3 = get_numpy_array(
+            state['vertical_wind_skewness'].to_units('m^3 s^-3'), ['*', 'z'])
+        qn = get_numpy_array(
+            state['nonprecipitating_water_mixing_ratio'].to_units('kg/kg'), ['*', 'z'])
+        qn2 = get_numpy_array(
+            state['nonprecipitating_water_mixing_ratio_variance'].to_units(''), ['*', 'z'])
+        thetal = get_numpy_array(
+            state['liquid_water_potential_temperature'].to_units('degK'), ['*', 'z'])
+        thetal2 = get_numpy_array(
+            state['liquid_water_potential_temperature_variance'].to_units('degK^2'), ['*', 'z'])
+        w_qn = get_numpy_array(
+            state['correlation_of_vertical_wind_and_nonprecipitating_water_mixing_ratio'
+                ].to_units('m/s'), ['*', 'z'])
+        w_thetal = get_numpy_array(
+            state['correlation_of_vertical_wind_and_liquid_water_potential_temperature'
+                ].to_units('m/s'), ['*', 'z'])
+        qn_thetal = get_numpy_array(
+            state['correlation_of_nonprecipitating_water_mixing_ratio_and_liquid_water_potential_temperature'
+                ].to_units('degK'), ['*', 'z'])
+        rho = get_numpy_array(state['air_density'].to_units('kg m^-3'), ['*', 'z'])
+        tendencies, moments = get_tendencies_and_higher_order_moments(
+            p, u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal,
+            qn_thetal, rho, self.g, self.p0, self.Rd, self.Rv, self.Cpd,
+            self.Lv, self.closure_type)
+        out_tendencies = {
+            'eastward_wind': restore_dimensions(
+                tendencies['u'], from_dims=['*', 'z'],
+                result_like=state['eastward_wind'],
+                result_attrs={'units': 'm s^-2'}),
+            'northward_wind': restore_dimensions(
+                tendencies['v'], from_dims=['*', 'z'],
+                result_like=state['northward_wind'],
+                result_attrs={'units': 'm s^-2'}),
+            'nonprecipitating_water_mixing_ratio': restore_dimensions(
+                tendencies['qn'], from_dims=['*', 'z'],
+                result_like=state['nonprecipitating_water_mixing_ratio'],
+                result_attrs={'units': 's^-1'}),
+            'liquid_water_potential_temperature': restore_dimensions(
+                tendencies['thetal'], from_dims=['*', 'z'],
+                result_like=state['liquid_water_potential_temperature'],
+                result_attrs={'units': 'degK s^-1'}),
+            'vertical_velocity_variance': restore_dimensions(
+                tendencies['w2'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units', 'm^2 s^-3'}),
+            'vertical_velocity_skewness': restore_dimensions(
+                tendencies['w3'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_skewness'],
+                result_attrs={'units': 'm^3 s^-4'}),
+            'nonprecipitating_water_mixing_ratio_variance': restore_dimensions(
+                tendencies['qn2'], from_dims=['*', 'z'],
+                result_like=state['nonprecipitating_water_mixing_ratio_variance'],
+                result_attrs={'units': 's^-1'}),
+            'liquid_water_potential_temperature_variance': restore_dimensions(
+                tendencies['thetal2'], from_dims=['*', 'z'],
+                result_like=state['liquid_water_potential_temperature_variance'],
+                result_attrs={'units': 'K^2 s^-1'}),
+            'correlation_of_nonprecipitating_water_mixing_ratio_and_liquid_water_potential_temperature': restore_dimensions(
+                tendencies['qn_thetal'], from_dims=['*', 'z'],
+                result_like=state['correlation_of_nonprecipitating_water_mixing_ratio_and_liquid_water_potential_temperature'],
+                result_attrs={'units': 'K s^-1'}),
+            'correlation_of_vertical_velocity_and_nonprecipitating_water_mixing_ratio': restore_dimensions(
+                tendencies['w_qn'], from_dims=['*', 'z'],
+                result_like=state['correlation_of_vertical_velocity_and_nonprecipitating_water_mixing_ratio'],
+                result_attrs={'units': 'm s^-2'}),
+            'correlation_of_vertical_velocity_and_liquid_water_potential_temperature': restore_dimensions(
+                tendencies['w_thetal'], from_dims=['*', 'z'],
+                result_like=state['correlation_of_vertical_velocity_and_liquid_water_potential_temperature'],
+                result_attrs={'units': 'm K s^-2'}),
+        }
+        diagnostics = {
+            'vertical_velocity_kurtosis': restore_dimensions(
+                moments['w4'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'm^4 s^-4'}),
+            'correlation_of_vertical_velocity_and_nonprecipitating_water_mixing_ratio_variance': restore_dimensions(
+                moments['w_qn2'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm s^-1'}),
+            'correlation_of_vertical_velocity_and_liquid_water_potential_temperature_variance': restore_dimensions(
+                moments['w_thetal2'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm K^2 s^-1'}),
+            'correlation_of_vertical_velocity_and_nonprecipitating_water_mixing_ratio_and_liquid_water_potential_temperature': restore_dimensions(
+                moments['w_qn_thetal'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm K s^-1'}),
+            'correlation_of_vertical_velocity_and_vertical_derivative_of_pressure_perturbation': restore_dimensions(
+                moments['w_dpdz'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'Pa s^-1'}),
+            'correlation_of_vertical_velocity_variance_and_nonprecipitating_water_mixing_ratio': restore_dimensions(
+                moments['w2_qn'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm^2 s^-2'}),
+            'correlation_of_vertical_velocity_variance_and_liquid_water_potential_temperautre': restore_dimensions(
+                moments['w2_thetal'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm^2 K s^-2'})
+            'correlation_of_vertical_velocity_variance_and_vertical_derivative_of_pressure_perturbation': restore_dimensions(
+                moments['w2_dpdz'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm Pa s^-2'}),
+            'correlation_of_nonprecipitating_water_mixing_ratio_and_vertical_derivative_of_pressure_perturbation': restore_dimensions(
+                moments['qn_dpdz'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'Pa m^-1'})
+            'correlation_of_liquid_water_potential_temperature_and_vertical_derivative_of_pressure_perturbation': restore_dimensions(
+                moments['thetal_dpdz'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'K Pa m^-1'}),
+            'liquid_water_mixing_ratio': restore_dimensions(
+                moments['ql'], from_dims=['*', 'z'],
+                result_like=state['nonprecipitating_water_mixing_ratio'],
+                result_attrs={'units': 'kg/kg'})
+            'correlation_of_vertical_velocity_and_liquid_water_mixing_ratio': restore_dimensions(
+                moments['w_ql'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'm s^-1'}),
+            'correlation_of_nonprecipitating_water_mixing_ratio_and_liquid_water_mixing_ratio': restore_dimensions(
+                moments['qn_ql'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'kg^2/kg^2'}),
+            'correlation_of_liquid_water_potential_temperature_and_liquid_water_mixing_ratio': restore_dimensions(
+                moments['thetal_ql'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'K'}),
+            'correlation_of_vertical_velocity_variance_and_liquid_water_mixing_ratio': restore_dimensions(
+                moments['w2_ql'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity'],
+                result_attrs={'units': 'm^2 s^-2'}),
+            'virtual_potential_temperature': restore_dimensions(
+                moments['thetav'], from_dims=['*', 'z'],
+                result_like=state['liquid_water_potential_temperature'],
+                result_attrs={'units': 'K'}),
+            'correlation_of_vertical_velocity_and_virtual_potential_temperature': restore_dimensions(
+                moments['w_thetav'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                restult_attrs={'units': 'm K s^-1'}),
+            'correlation_of_nonprecipitating_water_mixing_ratio_and_virtual_potential_temperature': restore_dimensions(
+                moments['qn_thetav'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'K'}),
+            'correlation_of_liquid_water_potential_temperature_and_virtual_potential_temperature': restore_dimensions(
+                moments['thetal_thetav'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_variance'],
+                result_attrs={'units': 'K^2'}),
+            'correlation_of_vertical_velocity_variance_and_virtual_potential_temperature': restore_dimensions(
+                moments['w2_thetav'], from_dims=['*', 'z'],
+                result_like=state['vertical_velocity_skewness'],
+                result_attrs={'units': 'm^2 K s^-2'}),
+        }
+        return out_tendencies, diagnostics
 
 
 class CHOMP(HOC):
-    pass
+    closure_type = 'chomp'
+
 
 class CLUBB(HOC):
-    pass
+    closure_type = 'adg1'
 
 
-def get_tendencies(
+def get_tendencies_and_higher_order_moments(
     p, u, v, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal, rho,
     g, p0, Rd, Rv, Cpd, Lv, closure_type='chomp'):
     epsilon_0 = Rd / Rv
@@ -103,13 +266,40 @@ def get_tendencies(
     w2_thetav = w2_thetal + constant_1*w2_qn + constant_2*w2_ql
 
     # Golaz et al. 2002 eqns 12-18
-    tendencies['w2'] = - d_dz(w3) - 2*w2*dw_dz + 2*g / thetav * w_thetav - 2 / rho * w_dpdz - epsilon_w_w
-    tendencies['qn2'] = - d_dz(w_qn2) - 2*w_qn*dqn_dz - epsilon_qn_qn
-    tendencies['thetal2'] = - d_dz(w_thetal2) - 2*w_thetal*dthetal_dz - epsilon_thetal_thetal
-    tendencies['qn_thetal'] = - d_dz(w_qn_thetal) - w_qn*dthetal_dz - w_thetal*dqn_dz - epsilon_qn_thetal
-    tendencies['w_qn'] = - d_dz(w2_qn) - w2*dqn_dz - w_qn*dw_dz + g/thetav*qn_thetav - qn_dpdz/rho - epsilon_w_qn
-    tendencies['w_thetal'] = - d_dz(w2_thetal) - w2*dthetal_dz - w_thetal*dthetal_dz + g/thetav*thetal_thetav - thetal_dpdz/rho - epsilon_w_thetal
-    tendencies['w3'] = - d_dz(w4) + 3*w2*d_dz(w2) - 2*w3*dw_dz + 3*g/thetav*w2_thetav - 3/rho*w2_dpdz - epsilon_w_w_w
+    tendencies['w2'] = -d_dz(w3) - 2*w2*dw_dz + 2*g / thetav * w_thetav - 2 / rho * w_dpdz - epsilon_w_w
+    tendencies['qn2'] = -d_dz(w_qn2) - 2*w_qn*dqn_dz - epsilon_qn_qn
+    tendencies['thetal2'] = -d_dz(w_thetal2) - 2*w_thetal*dthetal_dz - epsilon_thetal_thetal
+    tendencies['qn_thetal'] = -d_dz(w_qn_thetal) - w_qn*dthetal_dz - w_thetal*dqn_dz - epsilon_qn_thetal
+    tendencies['w_qn'] = -d_dz(w2_qn) - w2*dqn_dz - w_qn*dw_dz + g/thetav*qn_thetav - qn_dpdz/rho - epsilon_w_qn
+    tendencies['w_thetal'] = -d_dz(w2_thetal) - w2*dthetal_dz - w_thetal*dthetal_dz + g/thetav*thetal_thetav - thetal_dpdz/rho - epsilon_w_thetal
+    tendencies['w3'] = -d_dz(w4) + 3*w2*d_dz(w2) - 2*w3*dw_dz + 3*g/thetav*w2_thetav - 3/rho*w2_dpdz - epsilon_w_w_w
+    tendencies['qn'] = -d_dz(w_qn)
+    tendencies['thetal'] = -d_dz(w_thetal)
+
+    moments = {
+        'w4': w4,
+        'w_qn2': w_qn2,
+        'w_thetal2': w_thetal2,
+        'w_qn_thetal': w_qn_thetal,
+        'w_dpdz': w_dpdz,
+        'w2_qn': w2_qn,
+        'w2_thetal': w2_thetal,
+        'w2_dpdz': w2_dpdz,
+        'qn_dpdz': qn_dpdz,
+        'thetal_dpdz': thetal_dpdz,
+        'ql': ql,
+        'w_ql': w_ql,
+        'qn_ql': qn_ql,
+        'thetal_ql': thetal_ql,
+        'w2_ql': w2_ql,
+        'thetav': thetav,
+        'w_thetav': w_thetav,
+        'qn_thetav': qn_thetav,
+        'thetal_thetav': thetal_thetav,
+        'w2_thetav': w2_thetav,
+    }
+
+    return tendencies, moments
 
 
 
