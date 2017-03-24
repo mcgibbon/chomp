@@ -254,7 +254,8 @@ def get_tendencies_and_higher_order_moments(
          w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql,
          thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav) = adg1_moment_closure(
             p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal,
-            rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv)
+            rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g,
+            p0, Rd, Cpd, Lv, epsilon_0)
     elif closure_type is 'chomp':
         raise NotImplementedError
         # Golaz et al. 2002 eqn 33
@@ -356,7 +357,7 @@ def get_eddy_length_scales():
 
 def adg1_moment_closure(
         p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal,
-        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv):
+        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv, epsilon_0):
     moments = MomentCollection
     moments.set(Moment(w, {'w': 1}, central=False))
     moments.set(Moment(w2, {'w': 2}, central=True))
@@ -383,7 +384,7 @@ def adg1_moment_closure(
 
     thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav = get_thetav_moments(
         p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
-    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd)
+    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd, epsilon_0)
 
     w_dpdz = -rho/2. * (
         - c5 * (-2*w2*dw_dz + 2*g/thetav*w_thetav) +
@@ -506,7 +507,7 @@ def clubb_moment_closure(
     tau_w_w_w[a < 0.05] = tau_w_w_w[a < 0.05]/(1 + 3*(1 - (a[a < 0.05]-0.01)/0.04))
     tau_w_w_w[a > 0.05] = tau_w_w_w[a > 0.05]/(1 + 3*(1 - (0.99 - a[a > 0.05])/0.04))
     w2_dpdz = -rho/3. * (
-        -c8/tau_w_w_w*w3 - c11*(-2*w3*dw_dz + 3*g/thetav*w2_thetav)
+        -c8/tau_w_w_w*w3 - c11*(-2*w3*dw_dz + 3*g/thetav*w2_thetav))
     return (
         tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
         w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql, thetav,
@@ -515,7 +516,7 @@ def clubb_moment_closure(
 
 def get_thetav_moments(
         p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
-    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd):
+    thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd, epsilon_0):
     # Golaz et al. 2002 eqn 33
     # we modify theta0 -> theta due to Bougealt et al. 1981b eqns 4-5
     theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
