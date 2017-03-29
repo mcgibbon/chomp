@@ -4,6 +4,7 @@ from sympl import (
     restore_dimensions)
 from hoc import Closure, Moment, MomentCollection
 import numpy as np
+from scipy.special import erf
 
 c1 = 1.7  # constant in Golaz et al. 2002 eqn 24a
 c2 = 1.04  # constant in Golaz et al. 2002 eqn 24a-b
@@ -18,7 +19,29 @@ nu_2 = 20.  # constant in Golaz et al. 2002 eqn 24a-b
 nu_6 = 30.  # constant in Golaz et al. 2002 eqn 24c
 
 
+def es_from_T_Bolton(T):
+    return 611.2*np.exp(17.67*(T-273.15)/(T-29.65))
+
+
+def get_qs(T, p, Rd, Rv):
+    epsilon_0 = Rd/Rv
+    es = es_from_T_Bolton(T)
+    return epsilon_0 * es/(p - (1 - epsilon_0)*es)
+
+
+def get_Beta(T, Rd, Rv, Cpd, Lv):
+    return Rd/Rv * (Lv/Rd) * (Lv/Cpd) / T**2
+
+
+def get_Tl(T, ql, Lv, Cpd):
+    # q is specific humidity
+    return T - Lv/Cpd*ql
+
+def Tl_from_thetal(thetal, p, p0, Rd, Cpd):
+    return thetal*(p/p0)**Rd/Cpd
+
 adg1 = Closure('adg1')
+
 
 class HOC(Prognostic):
 
@@ -224,8 +247,9 @@ def get_tendencies_and_higher_order_moments(
     if closure_type not in ['chomp', 'adg1']:
         raise ValueError("closure_type must be one of ['chomp', 'adg1']")
     tendencies = {}
-    sqrt_turbulence_kinetic_energy = (3./2*w2)**0.5
-    L1, L2 = get_eddy_length_scales()
+    turbulence_kinetic_energy = (3./2*w2)
+    sqrt_turbulence_kinetic_energy = turbulence_kinetic_energy**0.5
+    L1, L2 = get_eddy_length_scales(thetav, qn, qs, turbulence_kinetic_energy, z, g)
     tau_max = 900  # seconds, as in Golaz et al. 2002 eqn 25
     tau_1 = min(tau_max, L1/sqrt_turbulence_kinetic_energy)
     tau_2 = max(tau_max, L2/sqrt_turbulence_kinetic_energy)
@@ -249,14 +273,15 @@ def get_tendencies_and_higher_order_moments(
     tau_w_w_w = tau_1
     epsilon_w_w_w = c8 / tau_w_w_w * w3
 
-    if closure_type is 'adg1':
+    if closure_type.lower() in ['clubb', 'adg1']:
         (tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
          w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql,
-         thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav) = adg1_moment_closure(
+         thetav, w_thetav, qn_thetav, thetal_thetav,
+         w2_thetav, C) = clubb_moment_closure(
             p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal, qn_thetal,
             rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g,
-            p0, Rd, Cpd, Lv, epsilon_0)
-    elif closure_type is 'chomp':
+            p0, Rd, Rv, Cpd, Lv, epsilon_0)
+    elif closure_type.lower() is 'chomp':
         raise NotImplementedError
         # Golaz et al. 2002 eqn 33
         # we modify theta0 -> theta due to Bougealt et al. 1981b eqns 4-5
@@ -341,23 +366,104 @@ def d_dz_mid(quantity):
     return_value[-1] = return_value[-2]
     return return_value
 
+
 def d_dz_interface(quantity):
     return quantity[:, 1:] - quantity[:, :-1]
+
 
 def d2_dz2_mid(quantity):
     return d_dz_interface(d_dz_mid(quantity))
 
+
 def d2_dz2_interface(quantity):
     return d_dz_mid(d_dz_interface(quantity))
 
-def get_eddy_length_scales():
-    # Golaz et al. 2002 Section 3b
-    raise NotImplementedError
+
+def get_eddy_length_scales(thetav, thetal, p, qn, turbulence_kinetic_energy, z,
+                           g, p0, Rd, Rv, Cpd, mu=6e-4):
+    """
+    Calculates L1 and L2 as in Golaz et al. 2002 Section 3b. mu is fractional
+    entrainment of upward plumes as defined below equation 39, in units of m^-1.
+    """
+    e = turbulence_kinetic_energy
+    # must find heights first before lengths to implement nonlocal formulation
+    z_up = np.zeros(thetav.shape)
+    z_down = np.zeros(thetav.shape)
+    e_remaining = np.zeros(e.shape[:1])
+    done = np.zeros(e.shape[:1], dtype=np.bool)  # whether overshoot level has been found
+    z_up_max = np.zeros(thetav.shape[:1])
+    parcel_thetav = np.zeros(thetav.shape[:1])
+    parcel_thetal = np.zeros(thetav.shape[:1])
+    parcel_thetal = np.zeros(thetav.shape[:1])
+    parcel_qn = np.zeros(thetav.shape[:1])
+    for iz in range(thetav.shape[1]-1):
+        # in CLUBB, they entrain thetal and qn for the parcel, and then calculate thetav (mixing_length.F90 line 305)
+        # also they seem to use mixing ratio instead of specific humidity, should find out why
+        parcel_thetav[:] = thetav[:, iz]
+        parcel_thetal[:] = thetal[:, iz]
+        parcel_qn[:] = qn[:, iz]
+        e_remaining[:] = e[:, iz]
+        done[:] = False
+        for iz_plus in range(iz+1, thetav.shape[1]):
+            dE_dz = -1*g*(parcel_thetav[:, iz][~done] - thetav[:, iz_plus][~done])/thetav[:, iz_plus][~done]
+            dz = z[:, iz_plus][~done] - z[:, iz_plus - 1][~done]
+            dE = dE_dz*dz
+            assert dE > 0
+            new_done = e_remaining[~done] < dE
+            assert e_remaining[~done][new_done]/dE_dz[new_done] > 0
+            z_up[:, iz][~done][new_done] = z[:, iz_plus-1][~done][new_done] + e_remaining[~done][new_done]/dE_dz[new_done]
+            # Can only subtract energy after we're done using it for this level, and not earlier
+            e_remaining[~done] -= dE[~done]
+            assert np.all(e_remaining[~done] > 0)
+            done[~done][new_done] = True
+            mu_dz = mu * dz[~new_done]
+            parcel_thetav[~done] += mu_dz * (thetav[:, iz_plus][~done] - parcel_thetav[~done])
+            parcel_qn[~done] += mu_dz * (qn[:, iz_plus][~done] - parcel_qn[~done])
+            # TODO: complete the latent heat effect on parcel
+            Tl = Tl_from_thetal(thetal, p, p0, Rd, Cpd)
+            qs = get_qs(Tl, p, Rd, Rv)  # I'd think this should be T not Tl, but Tl is what CLUBB uses (e.g. mixing_length.F90 line 294)
+            supersat = parcel_qn[~done] > qs
+            if np.all(done):
+                break
+        else:  # only triggered if for loop doesn't "break"
+            z_up[:, iz][~done] = z[:, iz_plus][~done]
+        new_maximum = z_up_max < z_up[:, iz]
+        z_up[:, iz][~new_maximum] = z_up_max[~new_maximum]
+        z_up_max[new_maximum] = z_up[:, iz][new_maximum]
+    z_down_min = np.zeros(thetav.shape[:1])
+    for iz in range(1, thetav.shape[1]):
+        e_remaining[:] = e[:, iz]
+        done[:] = False
+        for iz_minus in range(iz-1, 0, -1):
+            dE_dz = g*(thetav[:, iz][~done] - thetav[:, iz_plus][~done])/thetav[:, iz_plus][~done]
+            dz = z[:, iz_minus][~done] - z[:, iz_minus + 1][~done]
+            dE = dE_dz*dz
+            assert dE > 0
+            new_done = e_remaining[~done] < dE
+            assert e_remaining[~done][new_done]/dE_dz[new_done] > 0
+            z_down[:, iz][~done][new_done] = z[:, iz_minus+1][~done][new_done] - e_remaining[~done][new_done]/dE_dz[new_done]
+            # Can only subtract energy after we're done using it for this level, and not earlier
+            e_remaining[~done] -= dE[~done]
+            assert np.all(e_remaining[~done] > 0)
+            done[~done][new_done] = True
+            if np.all(done):
+                break
+        else:  # only triggered if for loop doesn't "break"
+            z_down[:, iz][~done] = z[:, iz_minus][~done]
+        new_minimum = z_down_min > z_down[:, iz]
+        z_down[~new_minimum] = z_down_min[~new_minimum]
+        z_down_min[new_minimum] = z_down[new_minimum]
+    L_up = z_up - z
+    L_down = z - z_down
+    L = np.maximum((L_up*L_down)**0.5, 20.)  # minimum value of 20m
+    L1 = np.minimum(L, 400.)
+    L2 = np.minimum(L, 2000.)
+    return L1, L2
 
 
 def adg1_moment_closure(
         p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal,
-        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv, epsilon_0):
+        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Rv, Cpd, Lv, epsilon_0):
     moments = MomentCollection
     moments.set(Moment(w, {'w': 1}, central=False))
     moments.set(Moment(w2, {'w': 2}, central=True))
@@ -381,6 +487,7 @@ def adg1_moment_closure(
     thetal_ql = return_moments.get({'thetal': 1, 'ql': 1}, central=True)
     w2_ql = return_moments.get({'w': 2, 'ql': 1}, central=True)
     ql = return_moments.get({'ql': 1}, central=False)
+    C = return_moments.get({'C': 1}, central=False)
 
     thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav = get_thetav_moments(
         p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
@@ -405,12 +512,12 @@ def adg1_moment_closure(
     return (
         tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
         w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql, thetav,
-        w_thetav, qn_thetav, thetal_thetav, w2_thetav)
+        w_thetav, qn_thetav, thetal_thetav, w2_thetav, C)
 
 
 def clubb_moment_closure(
         p, w, w2, w3, qn, qn2, thetal, thetal2, w_qn, w_thetal,
-        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Cpd, Lv):
+        qn_thetal, rho, tau_1, tau_2, tau_w_w_w, dw_dz, u_w, v_w, du_dz, dv_dz, g, p0, Rd, Rv, Cpd, Lv):
     """
     Closure is taken from Larson and Golaz (2005). Terms are as they appear in
     that paper. Except thetal3 and qn3 are closed as in Golaz et al. 2002.
@@ -421,7 +528,7 @@ def clubb_moment_closure(
     qn3 = 1.2*Skw*qn2**(3./2)
 
     sigma_w_tilde = 0.4**0.5
-    sigma_w1 = sigma_w2 = sigma_w_tilde*w2**0.5
+    sigma_w = sigma_w_tilde*w2**0.5
     Sk_thetal = thetal3/(thetal2**(3./2))
     Sk_qn = qn3/(qn2**(3./2))
     hat_factor = 1./(1. - sigma_w_tilde**2)**0.5
@@ -491,6 +598,33 @@ def clubb_moment_closure(
         (1-a)*w_2_hat*(qn_2_tilde*thetal_2_tilde + r_qn_thetal*sigma_qn_2_tilde*sigma_thetal_2_tilde)
     )
 
+    sigma_thetal_1 = sigma_thetal_1_tilde*thetal2**0.5
+    sigma_thetal_2 = sigma_thetal_2_tilde*thetal2**0.5
+    sigma_qn_1 = sigma_qn_1_tilde*qn2**0.5
+    sigma_qn_2 = sigma_qn_2_tilde*qn2**0.5
+    thetal_1 = thetal_1_tilde*thetal2**0.5 + thetal
+    thetal_2 = thetal_2_tilde*thetal2**0.5 + thetal
+    qn_1 = qn_1_tilde*qn2**0.5 + qn
+    qn_2 = qn_2_tilde*qn2**0.5 + qn
+    w_1 = w_1_hat/hat_factor*w2**0.5 + w
+    w_2 = w_2_hat/hat_factor*w2**0.5 + w
+
+    C_1, ql_1, thetal_ql_1, qn_ql_1 = get_values_within_gaussian(
+        thetal_1, qn_1, sigma_thetal_1, sigma_qn_1, r_qn_thetal, p, p0, Rd, Rv,
+        Cpd, Lv)
+    C_2, ql_2, thetal_ql_2, qn_ql_2 = get_values_within_gaussian(
+        thetal_2, qn_2, sigma_thetal_2, sigma_qn_2, r_qn_thetal, p, p0, Rd, Rv,
+        Cpd, Lv)
+
+    C = a*C_1 + (1-a)*C_2
+    ql = a*ql_1 + (1-a)*ql_2
+    w_ql = a*(w_1 - w)*ql_1 + (1-a)*(w_2 - w)*ql_2
+    w2_ql = (a*((w_1 - w)**2 + sigma_w**2)*(ql_1 - ql) +
+             (1-a)*((w_2 - w)**2 + sigma_w**2)*(ql_2 - ql))
+    thetal_ql = (a*((thetal_1 - thetal)*ql_1 + thetal_ql_1) +
+                 (1-a)*((thetal_2 - thetal)*ql_2 + thetal_ql_2))
+    qn_ql = a*((qn_1 - qn)*ql_1 + qn_ql_1) + (1-a)*((qn_2 - qn)*ql_2 + qn_ql_2)
+
     thetav, w_thetav, qn_thetav, thetal_thetav, w2_thetav = get_thetav_moments(
         p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
     thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd)
@@ -511,16 +645,37 @@ def clubb_moment_closure(
     return (
         tau_w_w_w, w4, w_qn2, w_thetal2, w_qn_thetal, w_dpdz, w2_qn, w2_thetal,
         w2_dpdz, qn_dpdz, thetal_dpdz, ql, w_ql, qn_ql, thetal_ql, w2_ql, thetav,
-        w_thetav, qn_thetav, thetal_thetav, w2_thetav)
+        w_thetav, qn_thetav, thetal_thetav, w2_thetav, C)
 
+
+def get_values_within_gaussian(
+        thetal_bar, qn_bar, sigma_thetal, sigma_qn, r_qn_thetal,
+        p, p0, Rd, Rv, Cpd, Lv):
+    Tl = Tl_from_thetal(thetal_bar, p, p0, Rd, Cpd)
+    Beta = get_Beta(Tl, Rd, Rv, Cpd, Lv)
+    qs = get_qs(Tl, p, Rd, Rv)
+    c_qn = 1./(1 + Beta*qs)
+    c_thetal = (1 + Beta*qn_bar)/(1 + Beta*qs)**2*Cpd/Lv*Beta*qs*(p/p0)**(Rd/Cpd)
+    sigma_s = (
+        c_thetal**2*sigma_thetal**2 +
+        c_qn**2*sigma_qn**2 -
+        2*c_thetal*sigma_thetal*c_qn*sigma_qn*r_qn_thetal)**0.5
+    s = qn_bar - qs*(1 + Beta*qn_bar)/(1 + Beta*qs)
+    C = 0.5*(1 + erf(s/(2**0.5 * sigma_s)))
+    ql = s*C + sigma_s/(2*np.pi)**0.5*np.exp(-0.5*(s/sigma_s)**2)
+    thetal_ql = sigma_thetal*(c_qn*sigma_qn*r_qn_thetal - c_thetal*sigma_thetal)*C
+    qn_ql = sigma_qn*(c_qn*sigma_qn - c_thetal*sigma_thetal*r_qn_thetal)*C
+    return C, ql, thetal_ql, qn_ql
 
 def get_thetav_moments(
         p, thetal, qn, ql, w_thetal, w_qn, w_ql, qn_thetal, qn2, qn_ql, thetal2,
     thetal_ql, w2_thetal, w2_qn, w2_ql, p0, Lv, Rd, Cpd, epsilon_0):
+    rl = ql / (1 - ql)
+    rn = qn / (1 - qn)
     # Golaz et al. 2002 eqn 33
     # we modify theta0 -> theta due to Bougealt et al. 1981b eqns 4-5
-    theta = thetal - (p0/p)**(Rd/Cpd) * Lv/Cpd * ql
-    thetav = theta*(1 + 0.61*qn - ql)
+    theta = thetal - Lv/Cpd * rl
+    thetav = theta*(1 + 0.61*rn - rl)
     constant_1 = (1 - epsilon_0)/epsilon_0*theta
     constant_2 = Lv/Cpd*(p0/p)**(Rd/Cpd) - theta/epsilon_0
     w_thetav = w_thetal + constant_1*w_qn + constant_2*w_ql
